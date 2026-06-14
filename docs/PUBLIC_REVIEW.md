@@ -34,7 +34,7 @@ Response: API mode is opt-in with `--api` and may send screenshots to OpenAI, so
 
 Risk: "It only works on one private environment."
 
-Response: Redis, PM2, `agent-bus`, private hostnames, and personal paths were removed. Windows/WSL, macOS, and Linux capture paths are documented.
+Response: Private orchestration services, private hostnames, and personal paths were removed. Windows/WSL, macOS, and Linux capture paths are documented.
 
 Risk: "It relies on brittle terminal allowlists."
 

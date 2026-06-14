@@ -172,7 +172,7 @@ CODEX_CUA_STATE_DIR=/path/to/state target/release/codex-cua-resume-assist --dry-
 아래 모드는 명시적으로 `--api`를 붙였을 때만 켜집니다. 실시간 화면 캡처 또는 `--screenshot`으로 넘긴 이미지가 OpenAI로 전송될 수 있습니다.
 
 ```bash
-export OPENAI_API_KEY="..."
+# OPENAI_API_KEY must already be available in this shell.
 target/release/codex-cua-resume-assist --api --dry-run
 ```
 
@@ -190,7 +190,7 @@ Windows에서는 다음처럼 실행할 수 있습니다.
 cargo build --release
 .\target\release\codex-cua-resume-assist.exe --dry-run
 
-$env:OPENAI_API_KEY = "..."
+# OPENAI_API_KEY must already be available in this shell.
 .\target\release\codex-cua-resume-assist.exe --api --dry-run
 ```
 
@@ -246,6 +246,18 @@ cargo build --release --target x86_64-pc-windows-msvc --bin codex-cua-win-captur
 
 ```bash
 export CODEX_CUA_WIN_CAPTURE="/path/to/codex-cua-win-capture.exe"
+```
+
+WSL에서 바로 실행하려면 wrapper를 사용할 수 있습니다. 이 명령은 dry-run이 아니라 실제 실행 모드입니다.
+
+```bash
+./scripts/resume-foreground-wsl.sh
+```
+
+Windows PowerShell에서는 다음 wrapper를 사용할 수 있습니다.
+
+```powershell
+.\scripts\resume-foreground.ps1
 ```
 
 PowerShell을 이용한 화면 캡처 fallback은 기본으로 꺼져 있습니다. 일부 백신이나 보안 제품이 스크립트 기반 캡처를 차단할 수 있기 때문입니다. 필요한 경우에만 켜십시오.
