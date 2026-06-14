@@ -1,0 +1,22 @@
+[package]
+name = "codex-cua-resume-assist"
+version = "0.1.0"
+edition = "2021"
+description = "Public Computer Use style assistant for safely resuming Codex CLI work after quota windows recover"
+license = "MIT"
+repository = "https://github.com/Hostingglobal-Tech/codex-cua-resume-assist"
+default-run = "codex-cua-resume-assist"
+
+[dependencies]
+base64 = "0.22"
+serde_json = "1"
+ureq = { version = "2", features = ["json"] }
+
+[target.'cfg(windows)'.dependencies]
+image = { version = "0.25", default-features = false, features = ["png"] }
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
+] }
