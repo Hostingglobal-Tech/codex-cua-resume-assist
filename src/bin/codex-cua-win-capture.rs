@@ -30,12 +30,35 @@ fn windows_main() -> Result<(), String> {
     use windows_sys::Win32::System::Threading::{
         OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
     };
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+        SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE,
+        VK_RETURN,
+    };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         GetClassNameW, GetForegroundWindow, GetSystemMetrics, GetWindowTextLengthW, GetWindowTextW,
         GetWindowThreadProcessId, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
         SM_YVIRTUALSCREEN,
     };
 
+    let mut args = env::args_os();
+    let _ = args.next();
+    if args
+        .next()
+        .as_deref()
+        .and_then(|arg| arg.to_str())
+        .is_some_and(|arg| arg == "--type")
+    {
+        let text = args.next().and_then(|arg| arg.into_string().ok()).ok_or(
+            "usage: codex-cua-win-capture.exe --type TEXT [--expect-hwnd HWND]".to_string(),
+        )?;
+        let mut expect_hwnd = None;
+        while let Some(arg) = args.next() {
+            if arg == "--expect-hwnd" {
+                expect_hwnd = args.next().and_then(|value| value.into_string().ok());
+            }
+        }
+        return type_into_foreground(&text, expect_hwnd.as_deref());
+    }
     let mut args = env::args_os();
     let _ = args.next();
     let output = args
@@ -51,9 +74,9 @@ fn windows_main() -> Result<(), String> {
         }
     }
 
-    let title = window_text(hwnd);
-    let class_name = class_name(hwnd);
-    let process_path = process_path(pid).unwrap_or_default();
+    let title = read_window_text(hwnd);
+    let class_name = read_class_name(hwnd);
+    let process_path = process_path_for_pid(pid).unwrap_or_default();
     let process_name = process_path
         .rsplit(['\\', '/'])
         .next()
@@ -69,6 +92,7 @@ fn windows_main() -> Result<(), String> {
             "ok": true,
             "screenshot": output.display().to_string(),
             "active_window": {
+                "hwnd": hwnd as usize,
                 "kind": window_kind,
                 "process_name": process_name,
                 "class_name": class_name,
@@ -77,7 +101,7 @@ fn windows_main() -> Result<(), String> {
             "screen": screen,
         })
     );
-    fn window_text(hwnd: HWND) -> String {
+    fn read_window_text(hwnd: HWND) -> String {
         if hwnd.is_null() {
             return String::new();
         }
@@ -90,7 +114,7 @@ fn windows_main() -> Result<(), String> {
         utf16_lossy(&buf[..got.max(0) as usize])
     }
 
-    fn class_name(hwnd: HWND) -> String {
+    fn read_class_name(hwnd: HWND) -> String {
         if hwnd.is_null() {
             return String::new();
         }
@@ -99,7 +123,7 @@ fn windows_main() -> Result<(), String> {
         utf16_lossy(&buf[..got.max(0) as usize])
     }
 
-    fn process_path(pid: u32) -> Option<String> {
+    fn process_path_for_pid(pid: u32) -> Option<String> {
         if pid == 0 {
             return None;
         }
@@ -142,6 +166,100 @@ fn windows_main() -> Result<(), String> {
         } else {
             "other"
         }
+    }
+
+    fn foreground_window_meta() -> (usize, String, String, String, &'static str) {
+        let hwnd = unsafe { GetForegroundWindow() };
+        let mut pid = 0u32;
+        if !hwnd.is_null() {
+            unsafe {
+                GetWindowThreadProcessId(hwnd, &mut pid as *mut u32);
+            }
+        }
+        let title = read_window_text(hwnd);
+        let class_name = read_class_name(hwnd);
+        let process_path = process_path_for_pid(pid).unwrap_or_default();
+        let process_name = process_path
+            .rsplit(['\\', '/'])
+            .next()
+            .unwrap_or("")
+            .to_string();
+        let window_kind = classify_window(&process_name, &title, &class_name);
+        (hwnd as usize, process_name, class_name, title, window_kind)
+    }
+
+    fn type_into_foreground(text: &str, expect_hwnd: Option<&str>) -> Result<(), String> {
+        let text = text.trim();
+        if text.is_empty() || text.len() > 80 || text.contains('\n') || text.contains('\r') {
+            return Err("refusing unsafe --type text".to_string());
+        }
+        let (hwnd, process_name, class_name, title, window_kind) = foreground_window_meta();
+        if let Some(expected) = expect_hwnd {
+            if expected.trim() != hwnd.to_string() {
+                return Err(format!(
+                    "foreground window changed before typing: expected_hwnd={} actual_hwnd={}",
+                    expected.trim(),
+                    hwnd
+                ));
+            }
+        }
+        send_text_plus_enter(text)?;
+        println!(
+            "{}",
+            json!({
+                "ok": true,
+                "action": "type_text_enter",
+                "active_window": {
+                    "hwnd": hwnd,
+                    "kind": window_kind,
+                    "process_name": process_name,
+                    "class_name": class_name,
+                    "title": title,
+                }
+            })
+        );
+        Ok(())
+    }
+
+    fn keyboard_input(w_vk: u16, w_scan: u16, flags: u32) -> INPUT {
+        INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: w_vk,
+                    wScan: w_scan,
+                    dwFlags: flags,
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        }
+    }
+
+    fn send_input_pair(down: INPUT, up: INPUT) -> Result<(), String> {
+        let mut inputs = [down, up];
+        let sent = unsafe {
+            SendInput(
+                inputs.len() as u32,
+                inputs.as_mut_ptr(),
+                std::mem::size_of::<INPUT>() as i32,
+            )
+        };
+        if sent != inputs.len() as u32 {
+            return Err("SendInput failed".to_string());
+        }
+        Ok(())
+    }
+
+    fn send_text_plus_enter(text: &str) -> Result<(), String> {
+        for unit in text.encode_utf16() {
+            let down = keyboard_input(0, unit, KEYEVENTF_UNICODE);
+            let up = keyboard_input(0, unit, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP);
+            send_input_pair(down, up)?;
+        }
+        let enter_down = keyboard_input(VK_RETURN, 0, 0);
+        let enter_up = keyboard_input(VK_RETURN, 0, KEYEVENTF_KEYUP);
+        send_input_pair(enter_down, enter_up)
     }
 
     fn capture_screen(path: &PathBuf) -> Result<serde_json::Value, String> {

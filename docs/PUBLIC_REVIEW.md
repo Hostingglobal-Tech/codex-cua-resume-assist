@@ -9,14 +9,14 @@ Safe claim:
 - "This is an unofficial public alpha reference implementation for a screen-aware Codex CLI resume assistant."
 - "It uses the OpenAI Computer Use tool pattern and a local screenshot harness."
 - "It does not bypass rate limits; it only checks whether work can resume after legitimate recovery."
-- "It separates terminal emulator detection from shell detection."
+- "CUA makes the situational decision; the local helper only enforces narrow mechanical checks such as same foreground window and one configured short message."
 
 Claims to avoid:
 
 - "This fully automates every Codex session."
 - "This bypasses Codex limits."
 - "The prior private watchdog was itself OpenAI Computer Use."
-- "It can safely type into any terminal without human review."
+- "It can safely type into any app or terminal without risk."
 
 ## Criticism Risks and Responses
 
@@ -26,7 +26,7 @@ Response: The code uses the Responses API with a `computer` tool and a local `co
 
 Risk: "This is dangerous automation."
 
-Response: The public build is observation-first. It blocks model-requested click/type/scroll actions and returns `wait`. The optional fallback execution path is opt-in only: users must pass both `--execute` and `--exec-fallback`, and the command runs only after a `resume` decision. Long prompts are supplied through stdin or a file so shell wrappers do not split a prompt into unintended command-line arguments. Teams that require coordination can add `--preflight-command` so their session bus, artifact claim, or duplicate-work check must pass before fallback execution.
+Response: The public build is observation-first by default. It blocks model-requested click/type/scroll actions and returns `wait` unless the user explicitly enables execution. Execution is opt-in: users must pass `--execute` plus either `--exec-fallback` or `--terminal-send`, and the action runs only after a `resume` decision and confidence threshold. For `--terminal-send`, the user provides the exact short text; the helper rechecks that the foreground window is the same one CUA reviewed before sending text plus Enter. Long fallback prompts are supplied through stdin or a file so shell wrappers do not split a prompt into unintended command-line arguments. Teams that require coordination can add `--coordination-command` so their session bus, artifact claim, or duplicate-work check must pass before execution.
 
 Risk: "It leaks secrets."
 
@@ -36,9 +36,9 @@ Risk: "It only works on one private environment."
 
 Response: Redis, PM2, `agent-bus`, private hostnames, and personal paths were removed. Windows/WSL, macOS, and Linux capture paths are documented.
 
-Risk: "It confuses terminal app and shell."
+Risk: "It relies on brittle terminal allowlists."
 
-Response: The prompt explicitly separates terminal emulators such as WezTerm or Terminal.app from shells such as PowerShell, cmd.exe, bash, zsh, or fish.
+Response: Terminal or shell labels are treated as clues, not final allow/deny rules. CUA is asked to judge the visible situation. For the foreground typing path, the local helper does not decide based on a long list of app names; it only checks that the foreground window handle has not changed since CUA reviewed it.
 
 Risk: "The fallback command could leak logs."
 

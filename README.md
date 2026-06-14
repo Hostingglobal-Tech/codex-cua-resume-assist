@@ -18,9 +18,9 @@
 
 `continue`나 `계속 진행` 같은 짧은 문장을 입력하는 일 자체는 어렵지 않습니다. 진짜 어려운 부분은 “지금 그 문장을 입력해도 되는 화면인가”를 정확히 판단하는 것입니다.
 
-그래서 이 프로젝트에서 Computer Use는 단순 장식이 아닙니다. CUA는 화면을 보고, 현재 창이 실제 대상 터미널인지 확인하고, 사용량 제한이 정상적으로 회복된 상태인지 판단하고, 사람이 다른 작업을 하는 중이 아닌지 확인하는 제어 gate입니다.
+그래서 이 프로젝트에서 Computer Use는 단순 장식이 아닙니다. CUA는 화면을 보고, 현재 창이 실제로 재개해도 되는 작업 세션인지, 사용량 제한이 정상적으로 회복된 상태인지, 사람이 다른 작업을 하는 중은 아닌지 판단하는 제어 gate입니다.
 
-짧은 문장 입력은 마지막 실행부일 뿐입니다. CUA 판단, 세션 간 사전 조율, 작업 claim, 중복 실행 방지 lock, 신뢰도 기준을 모두 통과했을 때만 식별된 터미널이나 pane에 제한적으로 실행되어야 합니다. 아무 foreground 창에 무조건 `continue`를 입력하는 방식은 이 프로젝트의 방향이 아닙니다.
+짧은 문장 입력은 마지막 실행부일 뿐입니다. CUA 판단, 세션 간 사전 조율, 작업 claim, 중복 실행 방지 lock, 신뢰도 기준을 모두 통과했을 때만 제한적으로 실행되어야 합니다. 아무 foreground 창에 무조건 `continue`를 입력하는 방식은 이 프로젝트의 방향이 아닙니다.
 
 ## 핵심: 세션 간 통신과 분업
 
@@ -43,15 +43,15 @@
 - 긴 프롬프트를 명령행 인자로 넘기면 Windows PowerShell이나 CLI wrapper가 문장을 잘못 쪼개서 `unexpected argument` 오류가 날 수 있었습니다.
 - 재개 명령이 실행되기 전에 다른 AI 세션이 이미 같은 일을 맡았는지 확인하는 장치가 부족했습니다.
 - 여러 감시 프로세스가 동시에 같은 세션을 재개하려고 할 때 중복 실행을 줄이는 장치가 필요했습니다.
-- WezTerm, Windows Terminal, 일반 `cmd.exe`, `powershell.exe`를 더 분명히 구분해야 했습니다.
+- “PowerShell이면 된다”, “브라우저면 안 된다”처럼 상황을 코드에 계속 하드코딩하면 실제 화면 맥락을 놓칠 수 있었습니다.
 - fallback 명령의 출력 본문이 로그에 남으면 민감한 정보가 섞일 수 있어, 로그를 더 보수적으로 다뤄야 했습니다.
 
 이번 수정에서 아래를 반영했습니다.
 
 - 긴 프롬프트는 명령행 인자가 아니라 stdin 또는 파일로 넘길 수 있게 했습니다.
-- `--preflight-command`를 추가해, 재개 전에 세션 버스 확인, 작업 claim, 중복 작업 감지 같은 사전 점검을 강제할 수 있게 했습니다.
+- `--coordination-command`를 추가해, 재개 전에 세션 버스 확인, 작업 claim, 중복 작업 감지 같은 사전 점검을 강제할 수 있게 했습니다.
 - `--lock-file`을 추가해, 동시에 여러 감시 프로세스가 떠도 같은 재개 명령이 중복 실행될 가능성을 줄였습니다.
-- Windows Terminal 계열 창을 더 정확히 구분하도록 현재 창 제목과 앱 판별 정보를 보강했습니다.
+- 창 종류 하드코딩을 최종 판단 기준으로 쓰지 않고, CUA가 본 같은 foreground 창인지 `HWND`로 재확인한 뒤 지정된 짧은 문장만 입력하도록 바꿨습니다.
 - fallback 명령의 stdout/stderr 본문은 JSONL 로그에 저장하지 않고, 성공/실패 상태와 설정 여부만 남기도록 했습니다.
 
 즉, 이번 수정의 핵심은 “화면을 보고 재개 여부를 판단한다”에서 끝나는 것이 아니라, 실제 사람이 자리를 비운 상태에서도 더 안전하게 재개 명령을 넘기기 위한 기본 장치를 넣은 것입니다.
@@ -105,11 +105,10 @@
 
 ## 무엇을 하려는 프로젝트인가
 
-사람이 자리를 비운 동안 터미널이 멈춰 있을 수 있습니다. 이 도구는 화면을 캡처해 다음을 구분하려고 합니다.
+사람이 자리를 비운 동안 AI 코딩 도구가 멈춰 있을 수 있습니다. 이 도구는 화면을 캡처해 다음을 구분하려고 합니다.
 
 - 사용량 한도가 아직 남아 있는지, 회복됐는지
-- 현재 창이 WezTerm, Windows Terminal, Terminal.app 같은 터미널 앱인지
-- 그 안에서 PowerShell, cmd.exe, bash, zsh 같은 어떤 셸이 보이는지
+- 현재 foreground 창이 실제로 재개해도 되는 작업 세션인지
 - 사람이 타이핑 중인 위험한 상황은 아닌지
 - 지금 바로 진행해도 되는지, 아니면 기다려야 하는지
 
@@ -132,7 +131,7 @@ OpenAI Computer Use 방식은 모델이 화면을 보고, 필요한 판단을 �
 - API 모드는 `--api`를 붙여야만 켜집니다.
 - API 모드에서는 화면 캡처 이미지가 OpenAI로 전송될 수 있습니다.
 - 민감한 화면에서는 기본 모드만 쓰거나, 직접 검토한 스크린샷 파일만 넘기는 것을 권장합니다.
-- 공개 빌드는 터미널에 임의로 타이핑하지 않습니다.
+- 공개 빌드는 임의의 문장을 마음대로 타이핑하지 않습니다. 사용자가 명시한 짧은 문장만, CUA가 `resume`으로 판단하고 같은 foreground 창이 유지될 때만 보낼 수 있습니다.
 - 모델이 클릭, 입력, 스크롤 같은 조작을 요청하면 실행하지 않고 대기합니다.
 
 OpenAI 이미지/컴퓨터 사용 관련 공식 문서는 아래를 참고하십시오.
@@ -197,25 +196,39 @@ $env:OPENAI_API_KEY = "..."
 
 ## 선택적 재개 명령
 
-기본 공개 빌드는 터미널에 아무것도 입력하지 않습니다. 실제 재개 명령을 실행하려면 사용자가 `--execute`와 `--exec-fallback`을 명시해야 합니다.
+기본 공개 빌드는 아무것도 입력하지 않습니다. 실제 동작을 실행하려면 사용자가 `--execute`와 실행 방식을 명시해야 합니다.
 
 긴 프롬프트를 명령행 인자로 직접 넘기면 Windows PowerShell이나 CLI wrapper에서 인자가 잘못 쪼개질 수 있습니다. 이 프로젝트는 그런 경우를 피하기 위해 프롬프트를 파일 또는 stdin으로 넘기는 방식을 제공합니다.
 
-예시:
+### 새 Codex 작업으로 이어받기
 
 ```powershell
 Set-Content -Path .\resume-prompt.txt -Value "계속 진행" -Encoding UTF8
 .\target\release\codex-cua-resume-assist.exe --api --execute `
-  --preflight-command "your-coordination-check-command" `
+  --coordination-command "your-coordination-check-command" `
   --exec-fallback "codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check -" `
   --fallback-prompt .\resume-prompt.txt `
   --lock-file "$env:TEMP\codex-cua-resume-assist.lock"
 ```
 
+### CUA가 승인한 현재 창에 짧은 문장 보내기
+
+```powershell
+.\target\release\codex-cua-resume-assist.exe --api --execute `
+  --terminal-send "계속 진행" `
+  --min-confidence 0.70 `
+  --coordination-command "your-coordination-check-command" `
+  --require-coordination `
+  --lock-file "$env:TEMP\codex-cua-resume-assist.lock"
+```
+
+이 모드는 창 종류를 긴 목록으로 하드코딩해 결정하지 않습니다. CUA가 화면을 보고 `resume`을 판단하면, 로컬 helper가 CUA가 본 foreground 창과 입력 직전 foreground 창이 같은지만 확인하고, 사용자가 지정한 짧은 문장과 Enter만 보냅니다.
+
 주의:
 
 - `--exec-fallback`은 `decision=resume`일 때만 실행됩니다.
-- `--preflight-command`를 지정하면 이 명령이 성공해야만 fallback이 실행됩니다. 팀 환경에서는 여기서 세션 버스 확인, artifact claim, 중복 작업 감지를 강제할 수 있습니다.
+- `--terminal-send`도 `decision=resume`이고 신뢰도 기준을 넘을 때만 실행됩니다.
+- `--coordination-command`를 지정하면 이 명령이 성공해야만 실제 동작이 실행됩니다. 팀 환경에서는 여기서 세션 버스 확인, artifact claim, 중복 작업 감지를 강제할 수 있습니다.
 - `--dry-run`이 있으면 fallback 명령도 실행하지 않습니다.
 - fallback 명령의 stdout/stderr 본문은 로그에 저장하지 않고 상태만 기록합니다.
 - `--lock-file`은 중복 실행을 줄이는 advisory lock입니다. 보안 경계가 아닙니다.
@@ -260,11 +273,11 @@ macOS에서는 `screencapture -x`를 사용합니다. 시스템 설정에서 화
 - 기본값은 로컬 전용입니다.
 - API 모드는 사용자가 직접 `--api`를 붙여야 켜집니다.
 - API 키는 셸 명령줄이 아니라 Rust HTTP 헤더로 전송합니다.
-- 실제 재개 명령은 사용자가 `--execute --exec-fallback`을 명시해야만 실행됩니다.
-- 협업 채널이나 작업 큐를 쓰는 팀은 `--preflight-command`로 사전 확인을 강제할 수 있습니다.
+- 실제 동작은 사용자가 `--execute`와 `--exec-fallback` 또는 `--terminal-send`를 명시해야만 실행됩니다.
+- 협업 채널이나 작업 큐를 쓰는 팀은 `--coordination-command`로 사전 확인을 강제할 수 있습니다.
 - 긴 프롬프트는 명령행 인자가 아니라 stdin 또는 파일로 넘기는 것을 권장합니다.
 - `.env`, 로그, 스크린샷, 바이너리 파일은 git에 올리지 않도록 막았습니다.
-- 이 공개 버전은 터미널에 임의 명령을 입력하지 않습니다.
+- 이 공개 버전은 임의 명령을 입력하지 않습니다. `--terminal-send`는 사용자가 지정한 짧은 문장과 Enter만 보냅니다.
 
 ## 함께 고쳐나가기
 
