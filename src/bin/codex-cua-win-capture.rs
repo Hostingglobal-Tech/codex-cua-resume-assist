@@ -21,11 +21,11 @@ fn windows_main() -> Result<(), String> {
     use std::os::windows::ffi::OsStringExt;
     use std::path::PathBuf;
     use std::ptr::null_mut;
-    use windows_sys::Win32::Foundation::{CloseHandle, HWND};
+    use windows_sys::Win32::Foundation::{CloseHandle, HWND, RECT};
     use windows_sys::Win32::Graphics::Gdi::{
         BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC,
-        GetDIBits, ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, CAPTUREBLT,
-        DIB_RGB_COLORS, HBITMAP, SRCCOPY,
+        GetDIBits, GetWindowDC, ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
+        CAPTUREBLT, DIB_RGB_COLORS, HBITMAP, HDC, SRCCOPY,
     };
     use windows_sys::Win32::System::Threading::{
         OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
@@ -35,9 +35,9 @@ fn windows_main() -> Result<(), String> {
         VK_RETURN,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetClassNameW, GetForegroundWindow, GetSystemMetrics, GetWindowTextLengthW, GetWindowTextW,
-        GetWindowThreadProcessId, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
-        SM_YVIRTUALSCREEN,
+        GetClassNameW, GetForegroundWindow, GetSystemMetrics, GetWindowRect, GetWindowTextLengthW,
+        GetWindowTextW, GetWindowThreadProcessId, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
+        SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
     };
 
     let mut args = env::args_os();
@@ -84,7 +84,7 @@ fn windows_main() -> Result<(), String> {
         .to_string();
     let window_kind = classify_window(&process_name, &title, &class_name);
 
-    let screen = capture_screen(&output)?;
+    let screen = capture_screen(&output, hwnd)?;
 
     println!(
         "{}",
@@ -262,7 +262,32 @@ fn windows_main() -> Result<(), String> {
         send_input_pair(enter_down, enter_up)
     }
 
-    fn capture_screen(path: &PathBuf) -> Result<serde_json::Value, String> {
+    fn capture_screen(path: &PathBuf, foreground_hwnd: HWND) -> Result<serde_json::Value, String> {
+        match capture_virtual_screen(path) {
+            Ok(meta) => Ok(meta),
+            Err(screen_err) => {
+                if foreground_hwnd.is_null() {
+                    return Err(screen_err);
+                }
+                match capture_foreground_window(path, foreground_hwnd) {
+                    Ok(mut meta) => {
+                        if let Some(obj) = meta.as_object_mut() {
+                            obj.insert(
+                                "fallback_reason".to_string(),
+                                json!(format!("virtual screen capture failed: {screen_err}")),
+                            );
+                        }
+                        Ok(meta)
+                    }
+                    Err(window_err) => Err(format!(
+                        "{screen_err}; foreground window capture failed: {window_err}"
+                    )),
+                }
+            }
+        }
+    }
+
+    fn capture_virtual_screen(path: &PathBuf) -> Result<serde_json::Value, String> {
         let x = unsafe { GetSystemMetrics(SM_XVIRTUALSCREEN) };
         let y = unsafe { GetSystemMetrics(SM_YVIRTUALSCREEN) };
         let width = unsafe { GetSystemMetrics(SM_CXVIRTUALSCREEN) };
@@ -275,18 +300,64 @@ fn windows_main() -> Result<(), String> {
         if screen_dc.is_null() {
             return Err("GetDC failed".to_string());
         }
-        let mem_dc = unsafe { CreateCompatibleDC(screen_dc) };
-        if mem_dc.is_null() {
-            unsafe {
-                ReleaseDC(null_mut(), screen_dc);
+        let result = capture_dc_region(path, screen_dc, x, y, width, height, "virtual_screen");
+        unsafe {
+            ReleaseDC(null_mut(), screen_dc);
+        }
+        result
+    }
+
+    fn capture_foreground_window(path: &PathBuf, hwnd: HWND) -> Result<serde_json::Value, String> {
+        let mut rect = RECT {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
+        let ok = unsafe { GetWindowRect(hwnd, &mut rect as *mut RECT) };
+        if ok == 0 {
+            return Err("GetWindowRect failed".to_string());
+        }
+        let width = rect.right - rect.left;
+        let height = rect.bottom - rect.top;
+        if width <= 0 || height <= 0 {
+            return Err(format!("invalid foreground window size {width}x{height}"));
+        }
+
+        let window_dc = unsafe { GetWindowDC(hwnd) };
+        if window_dc.is_null() {
+            return Err("GetWindowDC failed".to_string());
+        }
+        let result = capture_dc_region(path, window_dc, 0, 0, width, height, "foreground_window");
+        unsafe {
+            ReleaseDC(hwnd, window_dc);
+        }
+        result.map(|mut meta| {
+            if let Some(obj) = meta.as_object_mut() {
+                obj.insert("screen_x".to_string(), json!(rect.left));
+                obj.insert("screen_y".to_string(), json!(rect.top));
             }
+            meta
+        })
+    }
+
+    fn capture_dc_region(
+        path: &PathBuf,
+        source_dc: HDC,
+        source_x: i32,
+        source_y: i32,
+        width: i32,
+        height: i32,
+        source: &str,
+    ) -> Result<serde_json::Value, String> {
+        let mem_dc = unsafe { CreateCompatibleDC(source_dc) };
+        if mem_dc.is_null() {
             return Err("CreateCompatibleDC failed".to_string());
         }
-        let bitmap: HBITMAP = unsafe { CreateCompatibleBitmap(screen_dc, width, height) };
+        let bitmap: HBITMAP = unsafe { CreateCompatibleBitmap(source_dc, width, height) };
         if bitmap.is_null() {
             unsafe {
                 DeleteDC(mem_dc);
-                ReleaseDC(null_mut(), screen_dc);
             }
             return Err("CreateCompatibleBitmap failed".to_string());
         }
@@ -299,9 +370,9 @@ fn windows_main() -> Result<(), String> {
                 0,
                 width,
                 height,
-                screen_dc,
-                x,
-                y,
+                source_dc,
+                source_x,
+                source_y,
                 SRCCOPY | CAPTUREBLT,
             )
         };
@@ -312,7 +383,6 @@ fn windows_main() -> Result<(), String> {
             unsafe {
                 DeleteObject(bitmap as _);
                 DeleteDC(mem_dc);
-                ReleaseDC(null_mut(), screen_dc);
             }
             return Err("BitBlt failed".to_string());
         }
@@ -336,7 +406,7 @@ fn windows_main() -> Result<(), String> {
         let mut pixels = vec![0u8; width as usize * height as usize * 4];
         let got = unsafe {
             GetDIBits(
-                screen_dc,
+                source_dc,
                 bitmap,
                 0,
                 height as u32,
@@ -348,7 +418,6 @@ fn windows_main() -> Result<(), String> {
         unsafe {
             DeleteObject(bitmap as _);
             DeleteDC(mem_dc);
-            ReleaseDC(null_mut(), screen_dc);
         }
         if got == 0 {
             return Err("GetDIBits failed".to_string());
@@ -364,8 +433,9 @@ fn windows_main() -> Result<(), String> {
             .map_err(|e| format!("save {} failed: {e}", path.display()))?;
 
         Ok(json!({
-            "x": x,
-            "y": y,
+            "source": source,
+            "x": source_x,
+            "y": source_y,
             "width": width,
             "height": height,
         }))
