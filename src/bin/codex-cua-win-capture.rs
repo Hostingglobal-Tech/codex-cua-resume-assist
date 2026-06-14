@@ -72,6 +72,7 @@ fn windows_main() -> Result<(), String> {
                 "kind": window_kind,
                 "process_name": process_name,
                 "class_name": class_name,
+                "title": title,
             },
             "screen": screen,
         })
@@ -128,6 +129,8 @@ fn windows_main() -> Result<(), String> {
         let c = class_name.to_ascii_lowercase();
         if p.contains("wezterm") || t.contains("wezterm") {
             "wezterm"
+        } else if p.contains("windowsterminal") || c.contains("cascadia") {
+            "windows-terminal"
         } else if p == "powershell.exe"
             || p == "pwsh.exe"
             || t.contains("powershell")
@@ -136,8 +139,6 @@ fn windows_main() -> Result<(), String> {
             "powershell"
         } else if p == "cmd.exe" || t.contains("command prompt") {
             "cmd"
-        } else if p.contains("windowsterminal") || c.contains("cascadia") {
-            "windows-terminal"
         } else {
             "other"
         }

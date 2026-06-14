@@ -150,6 +150,32 @@ $env:OPENAI_API_KEY = "..."
 .\target\release\codex-cua-resume-assist.exe --api --dry-run
 ```
 
+## 선택적 재개 명령
+
+기본 공개 빌드는 터미널에 아무것도 입력하지 않습니다. 실제 재개 명령을 실행하려면 사용자가 `--execute`와 `--exec-fallback`을 명시해야 합니다.
+
+긴 프롬프트를 명령행 인자로 직접 넘기면 Windows PowerShell이나 CLI wrapper에서 인자가 잘못 쪼개질 수 있습니다. 이 프로젝트는 그런 경우를 피하기 위해 프롬프트를 파일 또는 stdin으로 넘기는 방식을 제공합니다.
+
+예시:
+
+```powershell
+Set-Content -Path .\resume-prompt.txt -Value "계속 진행" -Encoding UTF8
+.\target\release\codex-cua-resume-assist.exe --api --execute `
+  --preflight-command "your-coordination-check-command" `
+  --exec-fallback "codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check -" `
+  --fallback-prompt .\resume-prompt.txt `
+  --lock-file "$env:TEMP\codex-cua-resume-assist.lock"
+```
+
+주의:
+
+- `--exec-fallback`은 `decision=resume`일 때만 실행됩니다.
+- `--preflight-command`를 지정하면 이 명령이 성공해야만 fallback이 실행됩니다. 팀 환경에서는 여기서 세션 버스 확인, artifact claim, 중복 작업 감지를 강제할 수 있습니다.
+- `--dry-run`이 있으면 fallback 명령도 실행하지 않습니다.
+- fallback 명령의 stdout/stderr 본문은 로그에 저장하지 않고 상태만 기록합니다.
+- `--lock-file`은 중복 실행을 줄이는 advisory lock입니다. 보안 경계가 아닙니다.
+- 이 기능은 사용량 제한을 우회하지 않습니다. 정상적으로 다시 진행해도 되는지 확인한 뒤 사용자가 지정한 명령을 실행하는 보조 기능입니다.
+
 ## WSL에서 Windows 화면 정보 얻기
 
 WSL에서 실행하면서 Windows의 현재 창 정보를 더 정확히 보고 싶다면, Windows PowerShell에서 helper를 빌드합니다.
@@ -189,6 +215,9 @@ macOS에서는 `screencapture -x`를 사용합니다. 시스템 설정에서 화
 - 기본값은 로컬 전용입니다.
 - API 모드는 사용자가 직접 `--api`를 붙여야 켜집니다.
 - API 키는 셸 명령줄이 아니라 Rust HTTP 헤더로 전송합니다.
+- 실제 재개 명령은 사용자가 `--execute --exec-fallback`을 명시해야만 실행됩니다.
+- 협업 채널이나 작업 큐를 쓰는 팀은 `--preflight-command`로 사전 확인을 강제할 수 있습니다.
+- 긴 프롬프트는 명령행 인자가 아니라 stdin 또는 파일로 넘기는 것을 권장합니다.
 - `.env`, 로그, 스크린샷, 바이너리 파일은 git에 올리지 않도록 막았습니다.
 - 이 공개 버전은 터미널에 임의 명령을 입력하지 않습니다.
 

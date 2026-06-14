@@ -26,7 +26,7 @@ Response: The code uses the Responses API with a `computer` tool and a local `co
 
 Risk: "This is dangerous automation."
 
-Response: The public build is observation-first. It blocks model-requested click/type/scroll actions and returns `wait`.
+Response: The public build is observation-first. It blocks model-requested click/type/scroll actions and returns `wait`. The optional fallback execution path is opt-in only: users must pass both `--execute` and `--exec-fallback`, and the command runs only after a `resume` decision. Long prompts are supplied through stdin or a file so shell wrappers do not split a prompt into unintended command-line arguments. Teams that require coordination can add `--preflight-command` so their session bus, artifact claim, or duplicate-work check must pass before fallback execution.
 
 Risk: "It leaks secrets."
 
@@ -39,6 +39,10 @@ Response: Redis, PM2, `agent-bus`, private hostnames, and personal paths were re
 Risk: "It confuses terminal app and shell."
 
 Response: The prompt explicitly separates terminal emulators such as WezTerm or Terminal.app from shells such as PowerShell, cmd.exe, bash, zsh, or fish.
+
+Risk: "The fallback command could leak logs."
+
+Response: Fallback stdout/stderr bodies are not written into the JSONL event log. The event records only whether the command completed or failed, plus whether fallback, prompt, and advisory lock options were configured.
 
 ## Official Reference
 

@@ -2,7 +2,7 @@ use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use serde_json::{json, Value};
 use std::env;
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -17,6 +17,12 @@ struct Config {
     model: String,
     screenshot: Option<PathBuf>,
     max_rounds: u32,
+    exec_fallback: Option<String>,
+    preflight_command: Option<String>,
+    fallback_prompt_file: Option<PathBuf>,
+    fallback_prompt_stdin: bool,
+    lock_file: Option<PathBuf>,
+    lock_ttl_sec: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -33,7 +39,7 @@ struct CaptureContext {
     meta: Value,
 }
 
-fn usage() -> ! {
+fn usage(exit_code: i32) -> ! {
     eprintln!(
         "codex-cua-resume-assist 0.1.0\n\
          usage:\n\
@@ -43,9 +49,18 @@ fn usage() -> ! {
          env:\n\
            OPENAI_API_KEY required only with --api\n\
            CODEX_CUA_MODEL defaults to gpt-5.5\n\
-           CODEX_CUA_STATE_DIR overrides the local JSONL log directory"
+           CODEX_CUA_STATE_DIR overrides the local JSONL log directory\n\
+           CODEX_CUA_EXEC_FALLBACK supplies a command for --execute resume decisions\n\
+           CODEX_CUA_PREFLIGHT_COMMAND supplies a required command before fallback execution\n\
+         execution options:\n\
+           --exec-fallback CMD       run CMD only when decision=resume and --execute is set\n\
+           --preflight-command CMD   require CMD to succeed before fallback execution\n\
+           --fallback-prompt FILE    pipe FILE to the fallback command stdin\n\
+           --fallback-prompt-stdin   read this tool's stdin and pipe it to the fallback command\n\
+           --lock-file FILE          optional advisory lock to avoid duplicate fallback runs\n\
+           --lock-ttl-sec SEC        remove an old lock after SEC seconds, default 900"
     );
-    std::process::exit(2);
+    std::process::exit(exit_code);
 }
 
 fn parse_args() -> Result<Config> {
@@ -57,6 +72,25 @@ fn parse_args() -> Result<Config> {
         model: env::var("CODEX_CUA_MODEL").unwrap_or_else(|_| "gpt-5.5".to_string()),
         screenshot: None,
         max_rounds: 3,
+        exec_fallback: env::var("CODEX_CUA_EXEC_FALLBACK")
+            .ok()
+            .filter(|s| !s.trim().is_empty()),
+        preflight_command: env::var("CODEX_CUA_PREFLIGHT_COMMAND")
+            .ok()
+            .filter(|s| !s.trim().is_empty()),
+        fallback_prompt_file: env::var("CODEX_CUA_FALLBACK_PROMPT_FILE")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .map(PathBuf::from),
+        fallback_prompt_stdin: false,
+        lock_file: env::var("CODEX_CUA_LOCK_FILE")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .map(PathBuf::from),
+        lock_ttl_sec: env::var("CODEX_CUA_LOCK_TTL_SEC")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(900),
     };
     let mut i = 1usize;
     while i < args.len() {
@@ -83,7 +117,46 @@ fn parse_args() -> Result<Config> {
                     .parse()
                     .map_err(|_| "--max-rounds must be a number".to_string())?;
             }
-            "-h" | "--help" => usage(),
+            "--exec-fallback" => {
+                i += 1;
+                cfg.exec_fallback = Some(
+                    args.get(i)
+                        .cloned()
+                        .ok_or("--exec-fallback requires value")?,
+                );
+            }
+            "--preflight-command" => {
+                i += 1;
+                cfg.preflight_command = Some(
+                    args.get(i)
+                        .cloned()
+                        .ok_or("--preflight-command requires value")?,
+                );
+            }
+            "--fallback-prompt" => {
+                i += 1;
+                cfg.fallback_prompt_file = Some(PathBuf::from(
+                    args.get(i)
+                        .cloned()
+                        .ok_or("--fallback-prompt requires value")?,
+                ));
+            }
+            "--fallback-prompt-stdin" => cfg.fallback_prompt_stdin = true,
+            "--lock-file" => {
+                i += 1;
+                cfg.lock_file = Some(PathBuf::from(
+                    args.get(i).cloned().ok_or("--lock-file requires value")?,
+                ));
+            }
+            "--lock-ttl-sec" => {
+                i += 1;
+                cfg.lock_ttl_sec = args
+                    .get(i)
+                    .ok_or("--lock-ttl-sec requires value")?
+                    .parse()
+                    .map_err(|_| "--lock-ttl-sec must be a number".to_string())?;
+            }
+            "-h" | "--help" => usage(0),
             other => return Err(format!("unknown option: {other}")),
         }
         i += 1;
@@ -102,7 +175,9 @@ fn state_dir() -> PathBuf {
     if let Ok(dir) = env::var("CODEX_CUA_STATE_DIR") {
         return PathBuf::from(dir);
     }
-    let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let home = env::var("HOME")
+        .or_else(|_| env::var("USERPROFILE"))
+        .unwrap_or_else(|_| ".".to_string());
     PathBuf::from(home).join(".codex-cua-resume-assist")
 }
 
@@ -648,6 +723,141 @@ fn fallback_decision(reason: &str) -> Decision {
     }
 }
 
+struct LockGuard {
+    path: PathBuf,
+}
+
+impl Drop for LockGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+fn acquire_lock(path: &Path, ttl_sec: u64) -> Result<LockGuard> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("could not create lock directory {}: {e}", parent.display()))?;
+    }
+
+    if path.exists() {
+        let stale = fs::metadata(path)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|modified| SystemTime::now().duration_since(modified).ok())
+            .map(|age| age.as_secs() > ttl_sec)
+            .unwrap_or(false);
+        if stale {
+            let _ = fs::remove_file(path);
+        }
+    }
+
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|e| format!("lock busy or unavailable at {}: {e}", path.display()))?;
+    writeln!(file, "pid={}", std::process::id())
+        .map_err(|e| format!("could not write lock {}: {e}", path.display()))?;
+    Ok(LockGuard {
+        path: path.to_path_buf(),
+    })
+}
+
+fn fallback_prompt(cfg: &Config) -> Result<Vec<u8>> {
+    if let Some(path) = &cfg.fallback_prompt_file {
+        return fs::read(path)
+            .map_err(|e| format!("could not read fallback prompt {}: {e}", path.display()));
+    }
+    if cfg.fallback_prompt_stdin {
+        let mut input = Vec::new();
+        std::io::stdin()
+            .read_to_end(&mut input)
+            .map_err(|e| format!("could not read fallback prompt from stdin: {e}"))?;
+        return Ok(input);
+    }
+    Ok(Vec::new())
+}
+
+fn shell_command(command: &str) -> Command {
+    if cfg!(windows) {
+        let shell = env::var("ComSpec").unwrap_or_else(|_| "cmd.exe".to_string());
+        let mut cmd = Command::new(shell);
+        cmd.args(["/D", "/S", "/C", command]);
+        cmd
+    } else {
+        let shell = env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
+        let mut cmd = Command::new(shell);
+        cmd.args(["-lc", command]);
+        cmd
+    }
+}
+
+fn run_preflight(command: &str) -> Result<String> {
+    let output = shell_command(command)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .map_err(|e| format!("preflight command failed to start: {e}"))?;
+    if output.status.success() {
+        Ok(format!(
+            "preflight command completed status={}",
+            output.status.code().unwrap_or(0)
+        ))
+    } else {
+        Err(format!(
+            "preflight command failed status={}",
+            output
+                .status
+                .code()
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "unknown".to_string())
+        ))
+    }
+}
+
+fn run_exec_fallback(cfg: &Config, command: &str) -> Result<String> {
+    let _lock = if let Some(path) = &cfg.lock_file {
+        Some(acquire_lock(path, cfg.lock_ttl_sec)?)
+    } else {
+        None
+    };
+    if let Some(preflight) = &cfg.preflight_command {
+        run_preflight(preflight)?;
+    }
+    let prompt = fallback_prompt(cfg)?;
+    let mut child = shell_command(command)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("fallback command failed to start: {e}"))?;
+    if let Some(stdin) = child.stdin.as_mut() {
+        stdin
+            .write_all(&prompt)
+            .map_err(|e| format!("fallback command stdin failed: {e}"))?;
+    }
+    drop(child.stdin.take());
+    let output = child
+        .wait_with_output()
+        .map_err(|e| format!("fallback command wait failed: {e}"))?;
+    if output.status.success() {
+        Ok(format!(
+            "fallback command completed status={}",
+            output.status.code().unwrap_or(0)
+        ))
+    } else {
+        Err(format!(
+            "fallback command failed status={}",
+            output
+                .status
+                .code()
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "unknown".to_string())
+        ))
+    }
+}
+
 fn execute_decision(cfg: &Config, decision: &Decision) -> Result<Vec<String>> {
     let mut ran = Vec::new();
     if cfg.dry_run || !cfg.execute {
@@ -655,10 +865,14 @@ fn execute_decision(cfg: &Config, decision: &Decision) -> Result<Vec<String>> {
     }
     match decision.decision.as_str() {
         "resume" => {
-            ran.push(
-                "resume recommended; no shell command was executed by this public build"
-                    .to_string(),
-            );
+            if let Some(command) = &cfg.exec_fallback {
+                ran.push(run_exec_fallback(cfg, command)?);
+            } else {
+                ran.push(
+                    "resume recommended; no fallback command configured, nothing executed"
+                        .to_string(),
+                );
+            }
         }
         "wait" | "noop" => {}
         other => ran.push(format!("unknown decision ignored: {other}")),
@@ -671,7 +885,7 @@ fn main() {
         Ok(c) => c,
         Err(e) => {
             eprintln!("error: {e}");
-            usage();
+            usage(2);
         }
     };
 
@@ -706,6 +920,10 @@ fn main() {
         "model": cfg.model,
         "execute": cfg.execute,
         "dry_run": cfg.dry_run,
+        "exec_fallback_configured": cfg.exec_fallback.is_some(),
+        "preflight_configured": cfg.preflight_command.is_some(),
+        "fallback_prompt_configured": cfg.fallback_prompt_file.is_some() || cfg.fallback_prompt_stdin,
+        "lock_file_configured": cfg.lock_file.is_some(),
         "decision": decision.decision,
         "confidence": decision.confidence,
         "reason": decision.reason,
