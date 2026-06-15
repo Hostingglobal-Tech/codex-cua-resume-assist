@@ -32,7 +32,7 @@ fn windows_main() -> Result<(), String> {
     };
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
         SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE,
-        VK_RETURN,
+        VK_CONTROL, VK_RETURN,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         GetClassNameW, GetForegroundWindow, GetSystemMetrics, GetWindowRect, GetWindowTextLengthW,
@@ -252,6 +252,7 @@ fn windows_main() -> Result<(), String> {
     }
 
     fn send_text_plus_enter(text: &str) -> Result<(), String> {
+        send_ctrl_u()?;
         for unit in text.encode_utf16() {
             let down = keyboard_input(0, unit, KEYEVENTF_UNICODE);
             let up = keyboard_input(0, unit, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP);
@@ -260,6 +261,15 @@ fn windows_main() -> Result<(), String> {
         let enter_down = keyboard_input(VK_RETURN, 0, 0);
         let enter_up = keyboard_input(VK_RETURN, 0, KEYEVENTF_KEYUP);
         send_input_pair(enter_down, enter_up)
+    }
+
+    fn send_ctrl_u() -> Result<(), String> {
+        let ctrl_down = keyboard_input(VK_CONTROL, 0, 0);
+        let u_down = keyboard_input(0x55, 0, 0);
+        let u_up = keyboard_input(0x55, 0, KEYEVENTF_KEYUP);
+        let ctrl_up = keyboard_input(VK_CONTROL, 0, KEYEVENTF_KEYUP);
+        send_input_pair(ctrl_down, u_down)?;
+        send_input_pair(u_up, ctrl_up)
     }
 
     fn capture_screen(path: &PathBuf, foreground_hwnd: HWND) -> Result<serde_json::Value, String> {

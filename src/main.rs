@@ -51,7 +51,7 @@ fn usage(exit_code: i32) -> ! {
                                     [--model MODEL] [--screenshot PNG]\n\
          env:\n\
            OPENAI_API_KEY required only with --api\n\
-           CODEX_CUA_MODEL defaults to gpt-5.5\n\
+           CODEX_CUA_MODEL defaults to gpt-5.5; OPENAI_CUA_MODEL is accepted as an alias\n\
            CODEX_CUA_STATE_DIR overrides the local JSONL log directory\n\
            CODEX_CUA_EXEC_FALLBACK supplies a command for --execute resume decisions\n\
            CODEX_CUA_COORDINATION_COMMAND supplies a required command before fallback execution\n\
@@ -105,7 +105,9 @@ fn parse_args() -> Result<Config> {
         execute: false,
         no_api: true,
         dry_run: false,
-        model: env::var("CODEX_CUA_MODEL").unwrap_or_else(|_| "gpt-5.5".to_string()),
+        model: env::var("CODEX_CUA_MODEL")
+            .or_else(|_| env::var("OPENAI_CUA_MODEL"))
+            .unwrap_or_else(|_| "gpt-5.5".to_string()),
         screenshot: None,
         max_rounds: 3,
         exec_fallback: env_non_empty("CODEX_CUA_EXEC_FALLBACK"),

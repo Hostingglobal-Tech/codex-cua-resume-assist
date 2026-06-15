@@ -53,6 +53,8 @@
 - `--lock-file`을 추가해, 동시에 여러 감시 프로세스가 떠도 같은 재개 명령이 중복 실행될 가능성을 줄였습니다.
 - 창 종류 하드코딩을 최종 판단 기준으로 쓰지 않고, CUA가 본 같은 foreground 창인지 `HWND`로 재확인한 뒤 지정된 짧은 문장만 입력하도록 바꿨습니다.
 - fallback 명령의 stdout/stderr 본문은 JSONL 로그에 저장하지 않고, 성공/실패 상태와 설정 여부만 남기도록 했습니다.
+- 입력줄에 기존 문장이 남아 있으면 `continue`가 붙어서 깨질 수 있어, Windows helper는 입력 전에 현재 줄을 먼저 비우도록 바꿨습니다.
+- `OPENAI_CUA_MODEL` 환경변수도 모델 지정 alias로 받아, 설정 이름 차이 때문에 CUA가 빠지는 실수를 줄였습니다.
 
 즉, 이번 수정의 핵심은 “화면을 보고 재개 여부를 판단한다”에서 끝나는 것이 아니라, 실제 사람이 자리를 비운 상태에서도 더 안전하게 재개 명령을 넘기기 위한 기본 장치를 넣은 것입니다.
 
@@ -222,7 +224,7 @@ Set-Content -Path .\resume-prompt.txt -Value "계속 진행" -Encoding UTF8
   --lock-file "$env:TEMP\codex-cua-resume-assist.lock"
 ```
 
-이 모드는 창 종류를 긴 목록으로 하드코딩해 결정하지 않습니다. CUA가 화면을 보고 `resume`을 판단하면, 로컬 helper가 CUA가 본 foreground 창과 입력 직전 foreground 창이 같은지만 확인하고, 사용자가 지정한 짧은 문장과 Enter만 보냅니다.
+이 모드는 창 종류를 긴 목록으로 하드코딩해 결정하지 않습니다. CUA가 화면을 보고 `resume`을 판단하면, 로컬 helper가 CUA가 본 foreground 창과 입력 직전 foreground 창이 같은지만 확인하고, 현재 입력줄을 비운 뒤 사용자가 지정한 짧은 문장과 Enter만 보냅니다.
 
 주의:
 
